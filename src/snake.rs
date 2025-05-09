@@ -107,7 +107,8 @@ impl SnakeGame{
         let half_way = (board_size.x + 6)/ 2;
         board[half_way as usize][5] = 2; //initial Food position
         let termios = Termios::from_fd(0).unwrap();// 0 is file descriptor for stdin
-        let new_termios = termios.clone();
+        let mut new_termios = termios.clone();
+        new_termios.c_lflag &= !(ICANON | ECHO); // no echo and canonical mode for stdin
         SnakeGame { 
             board_size,
             board, 
@@ -297,7 +298,6 @@ impl SnakeGame{
 
     fn setup_streams(&mut self) {
         // setup stdin to not require enter press and not showing the input
-        self.new_termios.c_lflag &= !(ICANON | ECHO); // no echo and canonical mode for stdin
         tcsetattr(0, TCSANOW, &mut self.new_termios).unwrap();
     }
     
