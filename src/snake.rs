@@ -247,26 +247,26 @@ impl SnakeGame{
                     65 => { // up arrow
                         if result != SnakeDirection::Down{
                             result = SnakeDirection::Up;
+                            found = true;
                         }
-                        found = true;
                     },
                     66 => { // down arrow
                         if result != SnakeDirection::Up{
                             result = SnakeDirection::Down;
+                            found = true;
                         }
-                        found = true;
                     },
                     67 => { // right arrow
                         if result != SnakeDirection::Left{
                             result = SnakeDirection::Right;
+                            found = true;
                         }
-                        found = true;
                     },
                     68 => { // left arrow
                         if result != SnakeDirection::Right{
                             result = SnakeDirection::Left;
+                            found = true;
                         }
-                        found = true;
                     },
                     _ => {}// not an arrow
                 }
@@ -279,7 +279,7 @@ impl SnakeGame{
             }
         }
         // clear the input buffer
-        self.input_buffer.clear();
+        // self.input_buffer.clear();
         result
     }
 
