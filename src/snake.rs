@@ -286,6 +286,7 @@ impl SnakeGame{
     fn spawn_stdin_channel(&self) -> Receiver<u8> {
         let (tx, rx) = mpsc::channel::<u8>();
         thread::spawn(move || loop {
+            // read one u8 at a time from the input buffer
             let mut reader = io::stdin();
             let mut buffer: [u8; 1] = [1;1];
             reader.read_exact(&mut buffer).unwrap();
@@ -295,16 +296,18 @@ impl SnakeGame{
     }
 
     fn setup_streams(&mut self) {
+        // setup stdin to not require enter press and not showing the input
         self.new_termios.c_lflag &= !(ICANON | ECHO); // no echo and canonical mode for stdin
         tcsetattr(0, TCSANOW, &mut self.new_termios).unwrap();
     }
     
     fn reset_streams(&mut self) {
+        // reset stdin to default
         tcsetattr(0, TCSANOW, & self.old_termios).unwrap();
     }
 
     fn add_to_input_buffer(&mut self, key: u8){
-        if key == 1{//1 is the default value that should be ignored
+        if key == 1{//1 is the default value and should be ignored
             return;
         }
         // I should also check to ignore all keys that are not inputs for the game
@@ -312,6 +315,7 @@ impl SnakeGame{
     }
 
     fn move_snake(&mut self, direction: SnakeDirection) -> Coordinates{
+        // returns the old tail position
         self.snake_direction = direction.clone();
         let new_head = match direction{
             SnakeDirection::Up => self.snake_head_position.get_up(),
@@ -370,21 +374,23 @@ impl SnakeGame{
             }
             // choose a random position from the empty positions
             let random_index = num::abs(rand::random::<i32>()) % (empty_positions.len() as i32);
-            println!("Random index: {}", random_index);
-            self.food_position = empty_positions[random_index as usize].clone();
-            self.board[self.food_position.x as usize][self.food_position.y as usize] = 2;
+            self.add_food(empty_positions[random_index as usize].clone());
         }else{
             // use random choice
             loop{
                 let random_x = num::abs(rand::random::<i32>()) % self.board_size.x;
                 let random_y = num::abs(rand::random::<i32>()) % self.board_size.y;
-                println!("Random x: {}, y: {}", random_x, random_y);
                 if self.board[random_x as usize][random_y as usize] == 0{
-                    self.food_position = Coordinates::new(random_x, random_y);
-                    self.board[random_x as usize][random_y as usize] = 2;
+                    self.add_food(Coordinates::new(random_x, random_y));
                     break;
                 }
             }
         }
+    }
+
+    fn add_food(&mut self, position: Coordinates){
+        // add food to the board
+        self.food_position = position.clone();
+        self.board[position.x as usize][position.y as usize] = 2;
     }
 }
