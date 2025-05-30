@@ -163,45 +163,60 @@ impl SnakeGame {
         }
     }
 
+    fn receive_input(&mut self, stdin_channel: &Receiver<u8>) {
+        // try to read one byte at a time from the input pipe
+        // until the channel is empty
+        loop{
+            match stdin_channel.try_recv() {
+                Ok(key) => {
+                    // receive next byte from the channel
+                    self.add_to_input_buffer(key);
+                }
+                Err(TryRecvError::Empty) => {
+                    // if the channel is empty, we are done receiving input
+                    return;
+                }
+                Err(TryRecvError::Disconnected) => panic!("Channel disconnected"),
+            }
+        }
+        
+    }
+
+    fn main_loop(&mut self,stdin_channel: Receiver<u8>) {
+        let mut frame_start_time = Instant::now();
+        loop {
+            let duration = frame_start_time.elapsed();
+            // receive input from pipe
+            self.receive_input(&stdin_channel);
+            // check if it is time to proceed to next frame
+            if duration.as_millis() < self.difficulty.get_speed() as u128 {
+                // it is not time yet, wait a bit
+                std::thread::sleep(Duration::from_millis(3));
+                continue;
+            }
+            // set start time for the next frame
+            frame_start_time = Instant::now();
+            // get direction input
+            let direction_to_move = self.get_direction_input();
+            // move the snake
+            let old_tail_position = self.move_snake(direction_to_move);
+            // try to eat food
+            self.try_eating(old_tail_position);
+            // check if the game is over due to the result of the action
+            if self.is_over() {break;}
+            // update the screen
+            clear_screen();
+            self.display_board();
+        }
+    }
+
     pub fn play(&mut self) {
         // setup stdin to be non-blocking
         self.setup_streams();
         // spawn a thread to read from stdin
         let stdin_channel = self.spawn_stdin_channel();
         // main Game Loop happens here
-        let mut frame_start_time = Instant::now();
-        loop {
-            let duration = frame_start_time.elapsed();
-            // receive input from pipe
-            match stdin_channel.try_recv() {
-                Ok(key) => {
-                    self.add_to_input_buffer(key);
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => panic!("Channel disconnected"),
-            }
-            if duration.as_millis() < self.difficulty.get_speed() as u128 {
-                // wait for next frame
-                std::thread::sleep(Duration::from_millis(3));
-                continue;
-            }
-            // reset start
-            frame_start_time = Instant::now();
-            // get direction input
-            let direction_to_move = self.get_direction_input();
-            // apply action
-            let old_tail_position = self.move_snake(direction_to_move);
-            // try to eat food
-            self.try_eating(old_tail_position);
-            // check if the game is over due to the result of the action
-            if self.is_over() {
-                // println!("Game Over!");
-                break;
-            }
-            // display the board
-            clear_screen();
-            self.display_board();
-        }
+        self.main_loop(stdin_channel);
         // reset the streams
         self.reset_streams();
         // When its over display final screen
@@ -231,7 +246,7 @@ impl SnakeGame {
             }
         }
         // check if the whole board is snake (game win)
-        if self.points == (self.board_size.x * self.board_size.y) - INIT_SNAKE_SIZE {
+        if self.snake_body.len() == (self.board_size.x as usize* self.board_size.y as usize)  {
             return true;
         }
         false
