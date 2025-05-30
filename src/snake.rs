@@ -1,23 +1,20 @@
-// snakes moves from tail to head, eventually addding a piece on the tail if food is eated
-// snake moves at 4 tiles per second
-// and can only change direction towards its left or its right, other inputs are ignored
-use std::time::{Duration, Instant};
-use colored::Colorize;
-use circular_buffer::CircularBuffer;
-use std::collections::LinkedList;
-
-const INIT_SNAKE_SIZE: i32 = 4;
-
+// This Module implements a simple snake game in Rust.
+// It uses a terminal interface to display the game board and handle user input.
+// the game is played by directioning the snake using arrow keys.
 use std::io;
+use std::io::Read;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::TryRecvError;
 use std::thread;
-extern crate num;
-extern crate rand;
-extern crate termios;
-use std::io::Read;
+use std::time::{Duration, Instant};
+
+use circular_buffer::CircularBuffer;
+use colored::Colorize;
+use std::collections::LinkedList;
 use termios::{tcsetattr, Termios, ECHO, ICANON, TCSANOW};
+
+const INIT_SNAKE_SIZE: i32 = 4;
 
 type InputBuffer = CircularBuffer<1024, u8>; // 1024 bytes in input buffer
 
@@ -40,16 +37,16 @@ pub enum GameDifficulty {
     Medium,
     Hard,
     Extreme,
-    Impossible
+    Impossible,
 }
 
 impl GameDifficulty {
     pub fn get_speed(&self) -> u64 {
         match self {
-            GameDifficulty::Easy => 500, // 2 fps
-            GameDifficulty::Medium => 250, // 4 fps
-            GameDifficulty::Hard => 166, // 6 fps
-            GameDifficulty::Extreme => 125, // 8 fps
+            GameDifficulty::Easy => 500,       // 2 fps
+            GameDifficulty::Medium => 250,     // 4 fps
+            GameDifficulty::Hard => 166,       // 6 fps
+            GameDifficulty::Extreme => 125,    // 8 fps
             GameDifficulty::Impossible => 100, // 10 fps
         }
     }
@@ -147,7 +144,7 @@ impl SnakeGame {
         }
         let half_way = (board_size.x + 6) / 2;
         board[half_way as usize][5] = 2; //initial Food position
-        // setup terminal settings for non-blocking input
+                                         // setup terminal settings for non-blocking input
         let termios = Termios::from_fd(0).unwrap(); // 0 is file descriptor for stdin
         let mut new_termios = termios; // clone the termios struct
         new_termios.c_lflag &= !(ICANON | ECHO); // no echo and canonical mode for stdin
@@ -256,16 +253,17 @@ impl SnakeGame {
                 let item = self.board[j as usize][i as usize];
                 match item {
                     0 => print!("  "), // empty space
-                    1 => { // snake body
-                        if Coordinates::new(j,i) == self.snake_head_position {
+                    1 => {
+                        // snake body
+                        if Coordinates::new(j, i) == self.snake_head_position {
                             // snake head
-                            print!("{}","Ӫ ".yellow());
+                            print!("{}", "Ӫ ".yellow());
                         } else {
                             // snake body
-                            print!("{}","⏺ ".green());
+                            print!("{}", "⏺ ".green());
                         }
-                    },
-                    2 => print!("{}","♦ ".red()), // food
+                    }
+                    2 => print!("{}", "♦ ".red()), // food
                     _ => panic!("Invalid item on the board!"),
                 }
             }
@@ -305,7 +303,10 @@ impl SnakeGame {
     }
 
     fn is_in_bound(&self, position: &Coordinates) -> bool {
-        position.x >= 0 && position.x < self.board_size.x && position.y >= 0 && position.y < self.board_size.y
+        position.x >= 0
+            && position.x < self.board_size.x
+            && position.y >= 0
+            && position.y < self.board_size.y
     }
 
     fn get_direction_input(&mut self) -> SnakeDirection {
@@ -314,8 +315,9 @@ impl SnakeGame {
         while self.input_buffer.len() >= 3 {
             // find the first arrow key in the buffer
             let mut found = false;
-            if *self.input_buffer.nth_front(0).unwrap() == 27 &&
-               *self.input_buffer.nth_front(1).unwrap() == 91 {
+            if *self.input_buffer.nth_front(0).unwrap() == 27
+                && *self.input_buffer.nth_front(1).unwrap() == 91
+            {
                 // check the third byte for the arrow key
                 match self.input_buffer.nth_front(2).unwrap() {
                     65 => {
@@ -334,7 +336,7 @@ impl SnakeGame {
                     }
                     67 => {
                         // right arrow
-                        if self.is_moving_vertically(){
+                        if self.is_moving_vertically() {
                             result = SnakeDirection::Right;
                             found = true;
                         }
@@ -391,11 +393,11 @@ impl SnakeGame {
         match key {
             27 | 91 | 65 | 66 | 67 | 68 => {
                 // if the buffer is full, ignore the input
-                if self.input_buffer.is_full(){
+                if self.input_buffer.is_full() {
                     return;
                 }
                 self.input_buffer.push_back(key);
-            } 
+            }
             _ => {
                 // if it is not an arrow key, ignore the input
             }
@@ -422,7 +424,7 @@ impl SnakeGame {
         // add the new head to the front of the snake body
         self.snake_body.push_front(new_head.clone());
         // update the board only if the head did not bump into a wall
-        if self.is_in_bound(&new_head){
+        if self.is_in_bound(&new_head) {
             // if the new head position is valid, update the board for new head,
             // otherwise the game will exit when checking for game over
             self.board[new_head.x as usize][new_head.y as usize] = 1;
@@ -440,7 +442,7 @@ impl SnakeGame {
             // add the tail back to the snake
             self.snake_body.push_back(old_tail.clone());
             self.board[old_tail.x as usize][old_tail.y as usize] = 1;
-            
+
             // generate new food
             if !self.is_over() {
                 self.generate_food();
