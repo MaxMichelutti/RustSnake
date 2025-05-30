@@ -105,16 +105,29 @@ impl Coordinates {
 
 #[derive(Debug, Clone)]
 pub struct SnakeGame {
+    // The game board size in coordinates, x for width and y for height
     board_size: Coordinates,
+    // The game board represented as a 2D vector of integers
+    // 0 - empty space, 1 - snake body, 2 - food
     board: Vec<Vec<i32>>,
+    // The snake head position on the board
     snake_head_position: Coordinates,
+    // The snake body represented as a linked list of coordinates
     snake_body: LinkedList<Coordinates>, // The head is the first element
+    // The current direction that the snake is facing
     snake_direction: SnakeDirection,
+    // The position of the food on the board
     food_position: Coordinates,
+    // The current score of the game
     points: i32,
+    // The old terminal settings to restore them after the game is over
     old_termios: Termios,
+    // The new terminal settings to set for the game
     new_termios: Termios,
+    // The input buffer to store the user input
     input_buffer: InputBuffer,
+    // The difficulty of the game, which affects the speed of the snake
+    // higher difficulty means faster snake
     difficulty: GameDifficulty,
 }
 
@@ -166,7 +179,7 @@ impl SnakeGame {
     fn receive_input(&mut self, stdin_channel: &Receiver<u8>) {
         // try to read one byte at a time from the input pipe
         // until the channel is empty
-        loop{
+        loop {
             match stdin_channel.try_recv() {
                 Ok(key) => {
                     // receive next byte from the channel
@@ -179,10 +192,9 @@ impl SnakeGame {
                 Err(TryRecvError::Disconnected) => panic!("Channel disconnected"),
             }
         }
-        
     }
 
-    fn main_loop(&mut self,stdin_channel: Receiver<u8>) {
+    fn main_loop(&mut self, stdin_channel: Receiver<u8>) {
         let mut frame_start_time = Instant::now();
         loop {
             let duration = frame_start_time.elapsed();
@@ -203,7 +215,9 @@ impl SnakeGame {
             // try to eat food
             self.try_eating(old_tail_position);
             // check if the game is over due to the result of the action
-            if self.is_over() {break;}
+            if self.is_over() {
+                break;
+            }
             // update the screen
             clear_screen();
             self.display_board();
@@ -246,7 +260,7 @@ impl SnakeGame {
             }
         }
         // check if the whole board is snake (game win)
-        if self.snake_body.len() == (self.board_size.x as usize* self.board_size.y as usize)  {
+        if self.snake_body.len() == (self.board_size.x as usize * self.board_size.y as usize) {
             return true;
         }
         false
