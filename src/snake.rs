@@ -323,6 +323,12 @@ impl SnakeGame{
             SnakeDirection::Left => self.snake_head_position.get_left(),
             SnakeDirection::Right => self.snake_head_position.get_right(),
         };
+
+        // update tail first otherwise head may be overwritten by a 0
+        // when the head of the snake is right behinf its tail
+        let old_tail = self.snake_body.pop().unwrap();
+        self.board[old_tail.x as usize][old_tail.y as usize] = 0;
+
         self.snake_head_position = new_head.clone();
         self.snake_body.insert(0, new_head.clone());
         // update the board
@@ -332,8 +338,7 @@ impl SnakeGame{
             // otherwise the game will eventually exit anyway
             self.board[new_head.x as usize][new_head.y as usize] = 1;
         }
-        let old_tail = self.snake_body.pop().unwrap();
-        self.board[old_tail.x as usize][old_tail.y as usize] = 0;
+        
         old_tail
     }
 
