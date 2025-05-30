@@ -2,6 +2,9 @@
 // snake moves at 4 tiles per second
 // and can only change direction towards its left or its right, other inputs are ignored
 use std::time::{Duration, Instant};
+use colored::Colorize;
+use circular_buffer::CircularBuffer;
+use std::collections::LinkedList;
 
 const INIT_SNAKE_SIZE: i32 = 4;
 
@@ -10,137 +13,179 @@ use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::TryRecvError;
 use std::thread;
-extern crate rand;
 extern crate num;
-
+extern crate rand;
 extern crate termios;
 use std::io::Read;
-use termios::{Termios, TCSANOW, ECHO, ICANON, tcsetattr};
+use termios::{tcsetattr, Termios, ECHO, ICANON, TCSANOW};
+
+type InputBuffer = CircularBuffer<1024, u8>; // 1024 bytes in input buffer
 
 fn clear_screen() {
     print!("{}[2J", 27 as char);
     print!("{}[1;1H", 27 as char);
 }
 
-#[derive(Debug,Clone,PartialEq,Eq)]
-enum SnakeDirection{
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SnakeDirection {
     Up,
     Down,
     Left,
     Right,
 }
 
-#[derive(Debug,Clone,PartialEq,Eq)]
-pub struct Coordinates{
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GameDifficulty {
+    Easy,
+    Medium,
+    Hard,
+    Extreme,
+    Impossible
+}
+
+impl GameDifficulty {
+    pub fn get_speed(&self) -> u64 {
+        match self {
+            GameDifficulty::Easy => 500, // 2 fps
+            GameDifficulty::Medium => 250, // 4 fps
+            GameDifficulty::Hard => 166, // 6 fps
+            GameDifficulty::Extreme => 125, // 8 fps
+            GameDifficulty::Impossible => 100, // 10 fps
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Coordinates {
     x: i32,
     y: i32,
 }
 
-impl Coordinates{
-    pub fn new(x: i32, y: i32) -> Coordinates{
+impl PartialEq for Coordinates {
+    fn eq(&self, other: &Self) -> bool {
+        self.x == other.x && self.y == other.y
+    }
+}
+
+impl Coordinates {
+    pub fn new(x: i32, y: i32) -> Coordinates {
         Coordinates { x, y }
     }
 
-    pub fn move_left(&mut self){
+    pub fn move_left(&mut self) {
         self.x -= 1;
     }
-    pub fn move_right(&mut self){
+    pub fn move_right(&mut self) {
         self.x += 1;
     }
-    pub fn move_up(&mut self){
+    pub fn move_up(&mut self) {
         self.y -= 1;
     }
-    pub fn move_down(&mut self){
+    pub fn move_down(&mut self) {
         self.y += 1;
     }
-    pub fn get_left(&self) -> Coordinates{
+    pub fn get_left(&self) -> Coordinates {
         let mut res = Coordinates::new(self.x, self.y);
         res.move_left();
         res
     }
-    pub fn get_right(&self) -> Coordinates{
+    pub fn get_right(&self) -> Coordinates {
         let mut res = Coordinates::new(self.x, self.y);
         res.move_right();
         res
     }
-    pub fn get_up(&self) -> Coordinates{
+    pub fn get_up(&self) -> Coordinates {
         let mut res = Coordinates::new(self.x, self.y);
         res.move_up();
         res
     }
-    pub fn get_down(&self) -> Coordinates{
+    pub fn get_down(&self) -> Coordinates {
         let mut res = Coordinates::new(self.x, self.y);
         res.move_down();
         res
     }
 }
 
-#[derive(Debug,Clone)]
-pub struct SnakeGame{
+#[derive(Debug, Clone)]
+pub struct SnakeGame {
     board_size: Coordinates,
     board: Vec<Vec<i32>>,
     snake_head_position: Coordinates,
-    snake_body: Vec<Coordinates>, // The head is the first element
+    snake_body: LinkedList<Coordinates>, // The head is the first element
     snake_direction: SnakeDirection,
     food_position: Coordinates,
     points: i32,
     old_termios: Termios,
     new_termios: Termios,
-    input_buffer: Vec<u8>,
+    input_buffer: InputBuffer,
+    difficulty: GameDifficulty,
 }
 
-impl SnakeGame{
-    pub fn new(board_size: Coordinates) -> SnakeGame{
+impl SnakeGame {
+    pub fn new(board_size: Coordinates) -> Self {
+        Self::init_new(board_size, GameDifficulty::Medium)
+    }
+
+    pub fn new_with_difficulty(board_size: Coordinates, difficulty: GameDifficulty) -> Self {
+        Self::init_new(board_size, difficulty)
+    }
+
+    fn init_new(board_size: Coordinates, difficulty: GameDifficulty) -> Self {
+        // Initialize the game with a default board size
         if board_size.x < 10 || board_size.y < 10 {
             panic!("Board size must be at least 10x10");
         }
         let mut board = vec![vec![0; board_size.y as usize]; board_size.x as usize];
-        let snake_head_position = Coordinates::new(6,5);
-        let mut snake_body: Vec<Coordinates> = vec!();
+        let snake_head_position = Coordinates::new(6, 5);
+        let mut snake_body: LinkedList<Coordinates> = LinkedList::new();
         let mut current_position = snake_head_position.clone();
-        for _i in 0..INIT_SNAKE_SIZE{
+        for _i in 0..INIT_SNAKE_SIZE {
             // 1 means occupied by snake
             board[current_position.x as usize][current_position.y as usize] = 1;
-            snake_body.push(current_position.clone());
+            snake_body.push_back(current_position.clone());
             current_position.move_left();
         }
-        let half_way = (board_size.x + 6)/ 2;
+        let half_way = (board_size.x + 6) / 2;
         board[half_way as usize][5] = 2; //initial Food position
-        let termios = Termios::from_fd(0).unwrap();// 0 is file descriptor for stdin
-        let mut new_termios = termios.clone();
+        // setup terminal settings for non-blocking input
+        let termios = Termios::from_fd(0).unwrap(); // 0 is file descriptor for stdin
+        let mut new_termios = termios; // clone the termios struct
         new_termios.c_lflag &= !(ICANON | ECHO); // no echo and canonical mode for stdin
-        SnakeGame { 
+        SnakeGame {
             board_size,
-            board, 
-            snake_head_position, 
-            snake_body, 
-            snake_direction: SnakeDirection::Right, 
-            food_position: Coordinates::new(half_way,5),
+            board,
+            snake_head_position,
+            snake_body,
+            snake_direction: SnakeDirection::Right,
+            food_position: Coordinates::new(half_way, 5),
             points: 0,
             old_termios: termios,
             new_termios,
-            input_buffer: vec!()}
+            input_buffer: InputBuffer::new(),
+            difficulty,
+        }
     }
 
-    pub fn play(&mut self){
+    pub fn play(&mut self) {
         // setup stdin to be non-blocking
         self.setup_streams();
         // spawn a thread to read from stdin
         let stdin_channel = self.spawn_stdin_channel();
         // main Game Loop happens here
         let mut frame_start_time = Instant::now();
-        loop{
+        loop {
             let duration = frame_start_time.elapsed();
-            if duration.as_millis() < 250 {
-                // wait for next frame
-                match stdin_channel.try_recv() {
-                    Ok(key) => {
-                        self.add_to_input_buffer(key);
-                    },
-                    Err(TryRecvError::Empty) => {},
-                    Err(TryRecvError::Disconnected) => panic!("Channel disconnected"),
+            // receive input from pipe
+            match stdin_channel.try_recv() {
+                Ok(key) => {
+                    self.add_to_input_buffer(key);
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => panic!("Channel disconnected"),
+            }
+            if duration.as_millis() < self.difficulty.get_speed() as u128 {
+                // wait for next frame
+                std::thread::sleep(Duration::from_millis(3));
                 continue;
             }
             // reset start
@@ -152,7 +197,7 @@ impl SnakeGame{
             // try to eat food
             self.try_eating(old_tail_position);
             // check if the game is over due to the result of the action
-            if self.is_over(){
+            if self.is_over() {
                 // println!("Game Over!");
                 break;
             }
@@ -166,7 +211,7 @@ impl SnakeGame{
         self.display_final_screen();
     }
 
-    fn display_final_screen(&self){
+    fn display_final_screen(&self) {
         // display the final screen
         println!("Game Over!");
         println!("Final Score: {}", self.points);
@@ -176,57 +221,65 @@ impl SnakeGame{
         // println!("Food position: {:?}", self.food_position);
     }
 
-    fn is_over(&self) -> bool{
-        // check if the snake head is out of bounds
-        if self.snake_head_position.x < 0 || self.snake_head_position.x >= self.board_size.x{
+    fn is_over(&self) -> bool {
+        // check if the snake head is out of bounds (snake hit the wall)
+        if !self.is_in_bound(&self.snake_head_position) {
             return true;
         }
-        if self.snake_head_position.y < 0 || self.snake_head_position.y >= self.board_size.y{
-            return true;
-        }
-        // check if the snake head coords also appear in the body
-        for i in 1..self.snake_body.len(){
-            if self.snake_head_position.x == self.snake_body[i].x && self.snake_head_position.y == self.snake_body[i].y{
+        // check if the snake head coords also appear in the body (snake bites itself)
+        // iter over the snake skipping the head, which is always at the front
+        for body_part in self.snake_body.iter().skip(1) {
+            if self.snake_head_position == *body_part {
                 return true;
             }
         }
-        // check if the whole board is snake
-        if self.points == (self.board_size.x * self.board_size.y) - INIT_SNAKE_SIZE{
+        // check if the whole board is snake (game win)
+        if self.points == (self.board_size.x * self.board_size.y) - INIT_SNAKE_SIZE {
             return true;
         }
         false
     }
 
-    fn display_board(&self){
+    fn display_board(&self) {
         //border up
-        for _i in 0..self.board_size.x + 2{
-            print!("* ");
+        print!("▗");
+        for _i in 0..self.board_size.x {
+            print!("▄▄");
         }
-        println!();
-        for i in 0..self.board_size.y{
+        // print a single element to end the border
+        println!("▖");
+        for i in 0..self.board_size.y {
             //border left
-            print!("* ");
-            for j in 0..self.board_size.x{
+            print!("▐");
+            // row of board
+            for j in 0..self.board_size.x {
                 let item = self.board[j as usize][i as usize];
-                if item == 0{
-                    print!("  ");
-                }else if item == 1{
-                    print!("O ");
-                }else if item == 2{
-                    print!("F ");
-                }else{
-                    panic!("Invalid item on the board!");
+                match item {
+                    0 => print!("  "), // empty space
+                    1 => { // snake body
+                        if Coordinates::new(j,i) == self.snake_head_position {
+                            // snake head
+                            print!("{}","Ӫ ".yellow());
+                        } else {
+                            // snake body
+                            print!("{}","⏺ ".green());
+                        }
+                    },
+                    2 => print!("{}","♦ ".red()), // food
+                    _ => panic!("Invalid item on the board!"),
                 }
             }
             //border right
-            print!("* ");
+            print!("▌");
             //newline
             println!();
         }
         //border down
-        for _i in 0..self.board_size.x + 2{
-            print!("* ");
+        print!("▝");
+        for _i in 0..self.board_size.x {
+            print!("▀▀");
         }
+        print!("▘");
         println!();
         // score
         println!("Points: {}", self.points);
@@ -237,43 +290,67 @@ impl SnakeGame{
         // println!("Input buffer: {:?}", self.input_buffer);
     }
 
-    fn get_direction_input(&mut self) -> SnakeDirection{
-        let default_direction = self.snake_direction.clone();
-        let mut result = default_direction.clone();
+    fn is_moving_horizontally(&self) -> bool {
+        matches!(
+            self.snake_direction,
+            SnakeDirection::Left | SnakeDirection::Right
+        )
+    }
+
+    fn is_moving_vertically(&self) -> bool {
+        matches!(
+            self.snake_direction,
+            SnakeDirection::Up | SnakeDirection::Down
+        )
+    }
+
+    fn is_in_bound(&self, position: &Coordinates) -> bool {
+        position.x >= 0 && position.x < self.board_size.x && position.y >= 0 && position.y < self.board_size.y
+    }
+
+    fn get_direction_input(&mut self) -> SnakeDirection {
+        let mut result = self.snake_direction.clone();
         // arrows keys are long 3 bytes, first 2 need to be 27 and 91
-        while self.input_buffer.len() >= 3 {// find the first arrow key in the buffer
+        while self.input_buffer.len() >= 3 {
+            // find the first arrow key in the buffer
             let mut found = false;
-            if self.input_buffer[0] == 27 && self.input_buffer[1] == 91{
-                match self.input_buffer[2]{
-                    65 => { // up arrow
-                        if result != SnakeDirection::Down{
+            if *self.input_buffer.nth_front(0).unwrap() == 27 &&
+               *self.input_buffer.nth_front(1).unwrap() == 91 {
+                // check the third byte for the arrow key
+                match self.input_buffer.nth_front(2).unwrap() {
+                    65 => {
+                        // up arrow
+                        if self.is_moving_horizontally() {
                             result = SnakeDirection::Up;
                             found = true;
                         }
-                    },
-                    66 => { // down arrow
-                        if result != SnakeDirection::Up{
+                    }
+                    66 => {
+                        // down arrow
+                        if self.is_moving_horizontally() {
                             result = SnakeDirection::Down;
                             found = true;
                         }
-                    },
-                    67 => { // right arrow
-                        if result != SnakeDirection::Left{
+                    }
+                    67 => {
+                        // right arrow
+                        if self.is_moving_vertically(){
                             result = SnakeDirection::Right;
                             found = true;
                         }
-                    },
-                    68 => { // left arrow
-                        if result != SnakeDirection::Right{
+                    }
+                    68 => {
+                        // left arrow
+                        if self.is_moving_vertically() {
                             result = SnakeDirection::Left;
                             found = true;
                         }
-                    },
-                    _ => {}// not an arrow
+                    }
+                    _ => {} // not an arrow
                 }
             }
             // remove head of the buffer
-            self.input_buffer.remove(0);
+            self.input_buffer.pop_front();
             // check if input was found
             if found {
                 break;
@@ -289,7 +366,7 @@ impl SnakeGame{
         thread::spawn(move || loop {
             // read one u8 at a time from the input buffer
             let mut reader = io::stdin();
-            let mut buffer: [u8; 1] = [1;1];
+            let mut buffer: [u8; 1] = [1; 1];
             reader.read_exact(&mut buffer).unwrap();
             tx.send(buffer[0]).unwrap();
         });
@@ -298,26 +375,37 @@ impl SnakeGame{
 
     fn setup_streams(&mut self) {
         // setup stdin to not require enter press and not showing the input
-        tcsetattr(0, TCSANOW, &mut self.new_termios).unwrap();
+        tcsetattr(0, TCSANOW, &self.new_termios).unwrap();
     }
-    
+
     fn reset_streams(&mut self) {
         // reset stdin to default
-        tcsetattr(0, TCSANOW, & self.old_termios).unwrap();
+        tcsetattr(0, TCSANOW, &self.old_termios).unwrap();
     }
 
-    fn add_to_input_buffer(&mut self, key: u8){
-        if key == 1{//1 is the default value and should be ignored
+    fn add_to_input_buffer(&mut self, key: u8) {
+        if key == 1 {
+            //1 is the default value and should be ignored
             return;
         }
-        // I should also check to ignore all keys that are not inputs for the game
-        self.input_buffer.push(key);
+        match key {
+            27 | 91 | 65 | 66 | 67 | 68 => {
+                // if the buffer is full, ignore the input
+                if self.input_buffer.is_full(){
+                    return;
+                }
+                self.input_buffer.push_back(key);
+            } 
+            _ => {
+                // if it is not an arrow key, ignore the input
+            }
+        }
     }
 
-    fn move_snake(&mut self, direction: SnakeDirection) -> Coordinates{
+    fn move_snake(&mut self, direction: SnakeDirection) -> Coordinates {
         // returns the old tail position
         self.snake_direction = direction.clone();
-        let new_head = match direction{
+        let new_head = match direction {
             SnakeDirection::Up => self.snake_head_position.get_up(),
             SnakeDirection::Down => self.snake_head_position.get_down(),
             SnakeDirection::Left => self.snake_head_position.get_left(),
@@ -326,74 +414,88 @@ impl SnakeGame{
 
         // update tail first otherwise head may be overwritten by a 0
         // when the head of the snake is right behinf its tail
-        let old_tail = self.snake_body.pop().unwrap();
+        let old_tail = self.snake_body.pop_back().unwrap();
         self.board[old_tail.x as usize][old_tail.y as usize] = 0;
 
+        // update the head position
         self.snake_head_position = new_head.clone();
-        self.snake_body.insert(0, new_head.clone());
-        // update the board
-        if new_head.x >= 0 && new_head.x < self.board_size.x && 
-            new_head.y >= 0 && new_head.y < self.board_size.y {
-            // if the new head position is valid, update the board for new head, 
-            // otherwise the game will eventually exit anyway
+        // add the new head to the front of the snake body
+        self.snake_body.push_front(new_head.clone());
+        // update the board only if the head did not bump into a wall
+        if self.is_in_bound(&new_head){
+            // if the new head position is valid, update the board for new head,
+            // otherwise the game will exit when checking for game over
             self.board[new_head.x as usize][new_head.y as usize] = 1;
         }
-        
+
+        // return the old tail position
         old_tail
     }
 
-    fn try_eating(&mut self, old_tail: Coordinates){
-        if self.snake_head_position == self.food_position{
+    fn try_eating(&mut self, old_tail: Coordinates) {
+        if self.snake_head_position == self.food_position {
             //the food is eaten
             // increment score
             self.points += 1;
             // add the tail back to the snake
-            self.snake_body.push(old_tail.clone());
+            self.snake_body.push_back(old_tail.clone());
             self.board[old_tail.x as usize][old_tail.y as usize] = 1;
-            // exit the game if board is full
-            if self.is_over(){
-                return;
+            
+            // generate new food
+            if !self.is_over() {
+                self.generate_food();
             }
-            // try to gen new food
-            self.generate_food();
         }
     }
 
-    fn generate_food(&mut self){
+    fn generate_food(&mut self) {
         let board_size = self.board_size.x * self.board_size.y;
         let snake_length = self.snake_body.len() as i32;
-        if self.is_over(){//make sure that I am able to gen food
+        if self.is_over() {
+            //make sure that I am able to gen food
             return;
         }
-        // if snake occupies more than 80% of the board, use vec, 
-        // else use random choice of empty space
-        if snake_length > (board_size * 4) / 5{
+
+        let food_position: Coordinates;
+        // if snake occupies more than 80% of the board
+        // choose a random elem in a vec of empty board positions,
+        // else generate a random position until you find a free space
+        if snake_length > (board_size * 4) / 5 {
             // use vec
-            let mut empty_positions: Vec<Coordinates> = vec!();
-            for i in 0..self.board_size.x{
-                for j in 0..self.board_size.y{
-                    if self.board[i as usize][j as usize] == 0{
-                        empty_positions.push(Coordinates::new(i,j));
+            // collect all empty positions in the board
+            let mut empty_positions: Vec<Coordinates> = vec![];
+            for i in 0..self.board_size.x {
+                for j in 0..self.board_size.y {
+                    if self.board[i as usize][j as usize] == 0 {
+                        empty_positions.push(Coordinates::new(i, j));
                     }
                 }
             }
             // choose a random position from the empty positions
+            // I know this is not perfectly identically distributed, but it is good enough for this game
             let random_index = num::abs(rand::random::<i32>()) % (empty_positions.len() as i32);
-            self.add_food(empty_positions[random_index as usize].clone());
-        }else{
+
+            food_position = empty_positions[random_index as usize].clone();
+        } else {
             // use random choice
-            loop{
+            loop {
+                // generate a random position
                 let random_x = num::abs(rand::random::<i32>()) % self.board_size.x;
                 let random_y = num::abs(rand::random::<i32>()) % self.board_size.y;
-                if self.board[random_x as usize][random_y as usize] == 0{
-                    self.add_food(Coordinates::new(random_x, random_y));
+                // check if the position is empty
+                if self.board[random_x as usize][random_y as usize] == 0 {
+                    // if it is empty, add food to the board
+                    // and break the loop
+                    food_position = Coordinates::new(random_x, random_y);
                     break;
                 }
             }
         }
+        // add food to the board
+        self.add_food(food_position);
     }
 
-    fn add_food(&mut self, position: Coordinates){
+    fn add_food(&mut self, position: Coordinates) {
         // add food to the board
         self.food_position = position.clone();
         self.board[position.x as usize][position.y as usize] = 2;
